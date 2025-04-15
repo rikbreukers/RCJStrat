@@ -1,4 +1,3 @@
-
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -66,9 +65,7 @@ if simulate:
                 pit_duration = None
 
                 if fuel < fuel_usage_green:
-                    remaining = (43200 - total_seconds) // avg_lap_time
-                    needed = remaining * fuel_usage_green
-                    refuel_amt = min(max_fuel if strategy == "full" else 90, needed)
+                    refuel_amt = min(max_fuel if strategy == "full" else 90, max_fuel - fuel)
                     fuel_time = refuel_amt * refuel_rate + pit_overhead
                     pit_travel_time = (pitlane_length / pit_speed) * 3600 - 9
                     total_seconds += fuel_time + pit_travel_time
@@ -78,29 +75,17 @@ if simulate:
                     last_green_pit_lap = laps
 
                 if is_code60 and laps not in code60_used:
-                    since_pit = laps - last_green_pit_lap
-                    burned = since_pit * fuel_usage_green
                     space = max_fuel - fuel
-                    can_refuel = (
-                        (strategy == "partial" and space >= 15) or
-                        (strategy == "full" and burned >= 15 and space >= 15)
-                    )
-                    if can_refuel:
-                        time_into_lap = avg_lap_time * 0.5
-                        km_into_lap = (time_into_lap / avg_lap_time) * circuit_length
-                        km_to_pit_entry = circuit_length - km_into_lap
-                        time_to_pit_entry = km_to_pit_entry / 60 * 3600
+                    if space >= 15:
                         refuel_amt = min(28, space)
                         fuel_time = refuel_amt * refuel_rate + pit_overhead
                         pit_travel_time = (pitlane_length / pit_speed) * 3600 - 9
-                        total_pit_time = fuel_time + pit_travel_time
-                        time_needed = time_to_pit_entry + total_pit_time
-
+                        time_needed = fuel_time + pit_travel_time
                         if time_needed < code60_map[laps]:
                             fuel += refuel_amt
-                            total_seconds += total_pit_time
+                            total_seconds += time_needed
                             refueled = refuel_amt
-                            pit_duration = round(total_pit_time, 1)
+                            pit_duration = round(time_needed, 1)
                             code60_used.add(laps)
 
                 trace.append({
@@ -116,30 +101,34 @@ if simulate:
 
             return laps, total_seconds, trace, lap_time_log
 
-        laps_full, time_full, trace_full, lap_times_full = run_strategy("full")
-        laps_partial, time_partial, trace_partial, lap_times_partial = run_strategy("partial")
+        laps_full, final_time_full, trace_full, lap_times_full = run_strategy("full")
+        laps_partial, final_time_partial, trace_partial, lap_times_partial = run_strategy("partial")
 
-        if laps_full > laps_partial:
+        # Let both cars finish their lap after race end
+        full_laps_completed = len([lap for lap in trace_full if lap["Time (s)"] <= final_time_full])
+        partial_laps_completed = len([lap for lap in trace_partial if lap["Time (s)"] <= final_time_partial])
+
+        if full_laps_completed > partial_laps_completed:
             winner = "Full"
-            gap = (laps_full - laps_partial - 1) * avg_lap_time + avg_lap_time * 0.5
-        elif laps_partial > laps_full:
+            gap = (full_laps_completed - partial_laps_completed - 1) * avg_lap_time + avg_lap_time * 0.5
+        elif partial_laps_completed > full_laps_completed:
             winner = "Partial"
-            gap = (laps_partial - laps_full - 1) * avg_lap_time + avg_lap_time * 0.5
+            gap = (partial_laps_completed - full_laps_completed - 1) * avg_lap_time + avg_lap_time * 0.5
         else:
-            if time_full < time_partial:
+            if final_time_full < final_time_partial:
                 winner = "Full (by time)"
-                gap = abs(time_full - time_partial)
-            elif time_partial < time_full:
+                gap = abs(final_time_full - final_time_partial)
+            elif final_time_partial < final_time_full:
                 winner = "Partial (by time)"
-                gap = abs(time_partial - time_full)
+                gap = abs(final_time_partial - final_time_full)
             else:
                 winner = "Tie"
                 gap = 0
 
         results.append({
             "Sim": sim + 1,
-            "Full Laps": laps_full,
-            "Partial Laps": laps_partial,
+            "Full Laps": full_laps_completed,
+            "Partial Laps": partial_laps_completed,
             "Winner": winner
         })
         detailed_logs.append({
@@ -149,31 +138,28 @@ if simulate:
             "LapTimesFull": lap_times_full,
             "LapTimesPartial": lap_times_partial
         })
-        final_times.append((sim + 1, laps_full, time_full, laps_partial, time_partial))
         gap_totals.append(gap)
 
     st.session_state.results = pd.DataFrame(results)
     st.session_state.logs = detailed_logs
-    st.session_state.times = final_times
     st.session_state.gaps = gap_totals
 
 if st.session_state.results is not None:
-    df_results = st.session_state.results
+    df = st.session_state.results
     logs = st.session_state.logs
-    times = st.session_state.times
     gaps = st.session_state.gaps
 
-    st.markdown("### 🏁 Results Summary")
-    summary = df_results["Winner"].value_counts()
-    full_wins = summary.get("Full", 0) + summary.get("Full (by time)", 0)
-    total = len(df_results)
+    full_wins = df["Winner"].str.contains("Full").sum()
+    total = len(df)
     win_percent = (full_wins / total) * 100
     avg_gap = np.mean(gaps)
-    st.write(f"✅ Full Strategy Wins: {full_wins} out of {total} simulations ({win_percent:.1f}%)")
-    st.write(f"🔢 Average time gap between strategies: {avg_gap:.1f} seconds")
-    st.dataframe(df_results, use_container_width=True)
 
-    sim_id = st.selectbox("🔍 Select a Simulation to Visualize", df_results["Sim"])
+    st.markdown("### 🏁 Results Summary")
+    st.write(f"✅ Full Strategy Wins: {full_wins} out of {total} simulations ({win_percent:.1f}%)")
+    st.write(f"📏 Average time gap between strategies: {avg_gap:.1f} seconds")
+    st.dataframe(df, use_container_width=True)
+
+    sim_id = st.selectbox("🔍 Select a Simulation to Visualize", df["Sim"])
     sim_data = next((log for log in logs if log["Sim"] == sim_id), None)
 
     if sim_data:
